@@ -33,6 +33,7 @@ void BayesianMatting::initialize()
     maskFg = Mat(imgSize, CV_8UC1, cv::Scalar(0));
     maskBg = Mat(imgSize, CV_8UC1, cv::Scalar(0));
     maskUnknown = Mat(imgSize, CV_8UC1, cv::Scalar(0));
+    maskUnsolved = Mat(imgSize, CV_8UC1, cv::Scalar(0));
     alphamap = Mat(imgSize, CV_32FC1, cv::Scalar(0));
     
     for(int y=0;y<imgSize.height;y++)
@@ -51,6 +52,7 @@ void BayesianMatting::initialize()
     
     img.copyTo(fgImg, maskFg);
     img.copyTo(bgImg, maskBg);
+    maskUnknown.copyTo(maskUnsolved);
     
     return;
 }
@@ -91,4 +93,280 @@ double BayesianMatting::solve()
     
     cv::imshow("img", img);
     cv::waitKey(0);
+}
+
+void BayesianMatting::CollectSampleSet(int x, int y, vector<pair<cv::Point, float> > &fg_set, vector<pair<cv::Point, float> > &bg_set)
+{
+    // Erase any existing set
+    fg_set.clear();
+    bg_set.clear();
+    
+    #define UNSURE_DIST 1
+    pair<cv::Point, float> sample;
+    float dist_weight;
+    float inv_2sigma_square = 1.0/(2.0*this->sigma*this->sigma);
+    int dist=1;
+    
+    while(fg_set.size()<nearest)
+    {
+        if(y-dist>=0)
+        {
+            for(int z=max(0, x-dist);z<=min(this->img.cols-1, x+dist);z++)
+            {
+                dist_weight = expf(-(dist*dist+(z-x)*(z-x)) * inv_2sigma_square);
+                
+                // We know this pixel belongs to the foreground
+                if(maskFg.at<uchar>(y-dist, z)!=0)
+                {
+                    sample.first.x = z;
+                    sample.first.y = y-dist;
+                    sample.second = dist_weight;
+                    
+                    fg_set.push_back(sample);
+                    if(fg_set.size()==nearest)
+                        goto BG;
+                }
+                else if(dist<UNSURE_DIST && maskUnknown.at<uchar>(y-dist, z)!=0 && maskUnsolved.at<uchar>(y-dist, z)==0)
+                {
+                    sample.first.x = z;
+                    sample.first.y = y-dist;
+                    
+                    float alpha = alphamap.at<float>(y-dist, z);
+                    sample.second = dist_weight*alpha*alpha;                
+                    
+                    fg_set.push_back(sample);
+                    if(fg_set.size()==nearest)
+                        goto BG;
+                }
+            }
+        }
+        
+        if(y+dist<=img.rows-1)
+        {
+            for(int z=max(0, x-dist+1);z<=min(img.cols-1, x+dist);z++)
+            {
+                dist_weight = expf(-(dist*dist+(z-x)*(z-x)) * inv_2sigma_square);
+                
+                if(maskFg.at<uchar>(y+dist, z)!=0)
+                {
+                    sample.first.y = y+dist;
+                    sample.first.x = z;
+                    sample.second = dist_weight;
+                    
+                    fg_set.push_back(sample);
+                    if(fg_set.size()==nearest)
+                        goto BG;
+                }
+                else if(dist<UNSURE_DIST && maskUnknown.at<uchar>(y+dist, x)!=0 && maskUnsolved.at<uchar>(y+dist, z)==0)
+                {
+                    sample.first.x = z;
+                    sample.first.y = y+dist;
+                    
+                    float alpha = alphamap.at<float>(y+dist, z);
+                    sample.second = dist_weight*alpha*alpha;
+                    
+                    fg_set.push_back(sample);
+                    if(fg_set.size()==nearest)
+                        goto BG;
+                }
+            }
+        }
+        
+        if(x-dist>=0)
+        {
+            for(int z=max(0, y-dist+1);z<=min(img.rows-1, y+dist-1); z++)
+            {
+                dist_weight = expf(-(dist*dist+(z-y)*(z-y)) * inv_2sigma_square);
+                
+                if(maskFg.at<uchar>(z, x-dist)!=0)
+                {
+                    sample.first.x = x-dist;
+                    sample.first.y = z;
+                    sample.second = dist_weight;
+                    
+                    fg_set.push_back(sample);
+                    if(fg_set.size()==nearest)
+                        goto BG;
+                }
+                else if(dist<UNSURE_DIST && maskUnknown.at<uchar>(z, x-dist)!=0 && maskUnsolved.at<uchar>(z, x-dist)==0)
+                {
+                    sample.first.x = x-dist;
+                    sample.first.y = z;
+                    
+                    float alpha = alphamap.at<float>(z, x-dist);
+                    sample.second = dist_weight*alpha*alpha;
+                    
+                    fg_set.push_back(sample);
+                    if(fg_set.size()==nearest)
+                        goto BG;
+                }
+            }
+        }
+        
+        if(x+dist<img.cols)
+        {
+            for(int z=max(0, y-dist+1);z<=min(img.rows-1, y+dist-1); z++)
+            {
+                dist_weight = expf(-(dist*dist+(y-z)*(y-z)) * inv_2sigma_square);
+                
+                if(maskFg.at<uchar>(z, x+dist)!=0)
+                {
+                    sample.first.x = x+dist;
+                    sample.first.y = z;
+                    sample.second = dist_weight;
+                    
+                    fg_set.push_back(sample);
+                    if(fg_set.size()==nearest)
+                        goto BG;
+                }
+                else if(dist<UNSURE_DIST && maskUnknown.at<uchar>(z, x+dist)!=0 && maskUnsolved.at<uchar>(z, x+dist)==0)
+                {
+                    sample.first.x = x+dist;
+                    sample.first.y = z;
+                    
+                    float alpha = alphamap.at<float>(z, x+dist);
+                    sample.second = dist_weight*alpha*alpha;
+                    
+                    fg_set.push_back(sample);
+                    if(fg_set.size()==nearest)
+                        goto BG;
+                }
+            }
+        }
+        
+        ++dist;
+    }
+    
+BG:
+    int bg_unsure=0;
+    dist=1;
+
+    while(bg_set.size()<nearest)
+    {
+        if(y-dist>=0)
+        {
+            for(int z=max(0, x-dist);z<=min(x+dist, img.cols-1);z++)
+            {
+                dist_weight = expf(-(dist*dist+(z-x)*(z-x))*inv_2sigma_square);
+                if(maskBg.at<uchar>(y-dist, z)!=0)
+                {
+                    sample.first.x = z;
+                    sample.first.y = y-dist;
+                    sample.second = dist_weight;
+                    
+                    bg_set.push_back(sample);
+                    if(bg_set.size()==nearest)
+                        goto DONE;
+                }
+                else if(dist<UNSURE_DIST && maskUnknown.at<uchar>(y-dist, z)!=0 && maskUnsolved.at<uchar>(y-dist, z)==0)
+                {
+                    sample.first.x = z;
+                    sample.first.y = y-dist;
+                    
+                    float alpha = alphamap.at<float>(y-dist, z);
+                    sample.second = dist_weight*alpha*alpha;
+                    
+                    bg_set.push_back(sample);
+                    if(bg_set.size()==nearest)
+                        goto DONE;
+                }
+            }
+        }
+        
+        if(y+dist<img.rows)
+        {
+            for(int z=max(0, x-dist);z<=min(x+dist, img.cols-1);z++)
+            {
+                dist_weight = expf(-(dist*dist+(z-x)*(z-x))*inv_2sigma_square);
+                if(maskBg.at<uchar>(y+dist, z)!=0)
+                {
+                    sample.first.x = z;
+                    sample.first.y = y+dist;
+                    sample.second = dist_weight;
+                    
+                    bg_set.push_back(sample);
+                    if(bg_set.size()==nearest)
+                        goto DONE;
+                }
+                else if(dist<UNSURE_DIST && maskUnknown.at<uchar>(y+dist, z)!=0 && maskUnsolved.at<uchar>(y-dist, z)==0)
+                {
+                    sample.first.x = z;
+                    sample.first.y = y+dist;
+                    
+                    float alpha = alphamap.at<float>(y+dist, z);
+                    sample.second = dist_weight*alpha*alpha;
+                    
+                    bg_set.push_back(sample);
+                    if(bg_set.size()==nearest)
+                        goto DONE;
+                }
+            }
+        }
+        
+        if(x-dist>=0)
+        {
+            for(int z=max(0, y-dist+1);z<=min(y+dist-1, img.rows-1);z++)
+            {
+                dist_weight = expf(-(dist*dist+(y-z)*(y-z))*inv_2sigma_square);
+                if(maskBg.at<uchar>(z, x-dist)!=0)
+                {
+                    sample.first.x = x-dist;
+                    sample.first.y = z;
+                    sample.second = dist_weight;
+                    
+                    bg_set.push_back(sample);
+                    if(bg_set.size()==nearest)
+                        goto DONE;
+                }
+                else if(dist<UNSURE_DIST && maskUnknown.at<uchar>(z, x-dist)!=0 && maskUnsolved.at<uchar>(z, x-dist)==0)
+                {
+                    sample.first.x = x-dist;
+                    sample.first.y = z;
+                    
+                    float alpha = alphamap.at<float>(z, x-dist);
+                    sample.second = dist_weight*alpha*alpha;
+                    
+                    bg_set.push_back(sample);
+                    if(bg_set.size()==nearest)
+                        goto DONE;
+                }
+            }
+        }
+        
+        if(x+dist<img.cols)
+        {
+            for(int z=max(0, y-dist+1);z<=min(y+dist-1, img.rows-1);z++)
+            {
+                dist_weight = expf(-(dist*dist+(y-z)*(y-z))*inv_2sigma_square);
+                
+                if(maskBg.at<uchar>(z, x+dist)!=0)
+                {
+                    sample.first.x = x+dist;
+                    sample.first.y = z;
+                    sample.second = dist_weight;
+                    
+                    bg_set.push_back(sample);
+                    if(bg_set.size()==nearest)
+                        goto DONE;
+                }
+                else if(dist<UNSURE_DIST && maskUnknown.at<uchar>(z, x+dist)!=0 && maskUnsolved.at<uchar>(z, x+dist)==0)
+                {
+                    sample.first.x = x+dist;
+                    sample.first.y = z;
+                    
+                    float alpha = alphamap.at<float>(z, x+dist);
+                    sample.second = dist_weight*alpha*alpha;
+                    
+                    bg_set.push_back(sample);
+                    if(bg_set.size()==nearest)
+                        goto DONE;
+                }
+            }
+        }
+        
+        dist++;
+    }
+    
+DONE:
+    return;
 }

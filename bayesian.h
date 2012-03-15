@@ -22,9 +22,10 @@ public:
 private:
     void initialize();
     vector<Point> getContour(Mat trimap);
+    void CollectSampleSet(int x, int y, vector<pair<cv::Point, float> > &fg_set, vector<pair<cv::Point, float> > &bg_set);
     
     Mat img, fgImg, bgImg;
-    Mat maskFg, maskBg, maskUnknown;
+    Mat maskFg, maskBg, maskUnknown, maskUnsolved;
     Mat trimap, alphamap;
     int nearest;
     double sigma, sigmaC;
