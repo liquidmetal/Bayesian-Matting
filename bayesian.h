@@ -9,6 +9,7 @@ using namespace cv;
 #define BAYESIAN_SIGMA            8.f
 #define BAYESIAN_SIGMA_C          5.f
 #define BAYESIAN_MAX_CLUS           3
+#define WIN_SIZE 1
 
 class BayesianMatting
 {
@@ -23,10 +24,14 @@ private:
     void initialize();
     vector<Point> getContour(Mat trimap);
     void CollectSampleSet(int x, int y, vector<pair<cv::Point, float> > &fg_set, vector<pair<cv::Point, float> > &bg_set);
-    void GetGMMModel(int x, int y, vector<float> &fg_weight, const vector<Mat> fg_mean, vector<Mat> inv_fg_cov, vector<float> &bg_weight, vector<Mat> bg_mean, vector<Mat> inv_bg_cov);
+    void GetGMMModel(int x, int y, vector<float> &fg_weight, vector<Mat> &fg_mean, vector<Mat> inv_fg_cov, vector<float> &bg_weight, vector<Mat> bg_mean, vector<Mat> inv_bg_cov);
     void CalculateNonNormalizeCov(Mat cImg, vector<pair<cv::Point, float> > &clus_set, Mat mean, Mat cov);
     void CalculateMeanCov(Mat cImg, vector<pair<cv::Point, float> > &clus_set, Mat mean, Mat cov);
     void CalculateWeightMeanCov(Mat cImg, vector<pair<cv::Point, float> > &clus_set, float &weight, Mat mean, Mat cov);
+    void InitializeAlpha(int x, int y, Mat unsolvedMask);
+    void SolveAlpha(int x, int y);
+    void SolveBF(int x, int y, Mat fg_mean, Mat inv_fg_cov, Mat bg_mean, Mat inv_bg_cov);
+    float computeLikelihood(int x, int y, Mat fg_mean, Mat inv_fg_cov, Mat bg_mean, Mat inv_bg_cov);
     
     Mat img, fgImg, bgImg;
     Mat maskFg, maskBg, maskUnknown, maskUnsolved;

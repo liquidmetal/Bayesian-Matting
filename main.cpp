@@ -84,11 +84,18 @@ int main(int argc, char** argv)
     for(int i=1;i<argc;i++)
     {
         // Load the image and try solving it
-        Mat img = cv::imread(argv[i]);
-        clearPreviousSettings(img);
+        //Mat img = cv::imread(argv[i]);
+        //clearPreviousSettings(img);
         
         // Get a trimap from the user
-        Mat imgTrimap = getTrimap(img);
+        //Mat imgTrimap = getTrimap(img);
+        Mat img = cv::imread("./GT01.png");
+        Mat imgTrimap = cv::imread("./GT01_tri.png", 0);
+        
+        imshow("Image", img);
+        imshow("Trimap", imgTrimap);
+        waitKey(0);
+        
         BayesianMatting bm(img, imgTrimap);
         bm.solve();
         

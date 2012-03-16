@@ -1,4 +1,5 @@
 #include "bayesian.h"
+#include <stdio.h>
 
 BayesianMatting::BayesianMatting(cv::Mat img, cv::Mat trimap)
 {
@@ -85,14 +86,243 @@ void BayesianMatting::setParameters(int N, double sigma, double sigmaC)
 
 double BayesianMatting::solve()
 {
-    vector<cv::Point> p = getContour(maskUnknown);
-    for(int i=0;i<p.size();i++)
+    printf("Starting to solve\n");
+    int p, x, y, i, j, iter, fgClus, bgClus;
+    int outer;
+    float L, maxL=0;
+    
+    Mat shownImg = Mat(img.size(), 8, 3);
+    Mat solveAgainMask = Mat(maskUnsolved.size(), 8, 1);
+    
+    vector<float> fg_weight(BAYESIAN_MAX_CLUS, 0);
+    vector<float> bg_weight(BAYESIAN_MAX_CLUS, 0);
+    vector<Mat>   fg_mean(BAYESIAN_MAX_CLUS);
+    vector<Mat>   bg_mean(BAYESIAN_MAX_CLUS);
+    vector<Mat>   inv_fg_cov(BAYESIAN_MAX_CLUS);
+    vector<Mat>   inv_bg_cov(BAYESIAN_MAX_CLUS);
+    
+    for(i=0;i<BAYESIAN_MAX_CLUS;i++)
     {
-        cv::circle(img, p[i], 0, CV_RGB(255,0,0), 1);
+        fg_mean[i] = Mat(3, 1, CV_32FC1);
+        bg_mean[i] = Mat(3, 1, CV_32FC1);
+        inv_fg_cov[i] = Mat(3, 3, CV_32FC1);
+        inv_bg_cov[i] = Mat(3, 3, CV_32FC1);
+    }
+    
+    printf("Starting iterations\n");
+    
+    for(int iteration=0;iteration<1;iteration++)
+    {
+        if(iteration)
+            maskUnsolved.copyTo(solveAgainMask);
+            
+        outer = 0;
+        for(;;)
+        {
+            vector<cv::Point> toSolveList;
+            
+            if(!iteration)
+                toSolveList = getContour(maskUnsolved);
+            else
+                toSolveList = getContour(solveAgainMask);
+                
+            if(toSolveList.size()==0)
+                break;
+            //else
+                //printf("There are %d pixels to solve\n", toSolveList.size());
+                
+            img.copyTo(shownImg);
+            for(int k=0;k<toSolveList.size();k++)
+                cv::circle(shownImg, toSolveList[k], 0, CV_RGB(128,128,128));
+                
+            cv::imshow("points to solve", shownImg);
+            cv::waitKey(0);
+            
+            // Solve the points
+            for(p=0;p<toSolveList.size();p++)
+            {
+                printf("Pixel %d/%d\n", p, toSolveList.size());
+                x = toSolveList[p].x;
+                y = toSolveList[p].y;
+
+                //printf("Trying to get GMM for pixel (%d,%d) - ", x, y);
+                GetGMMModel(x, y, fg_weight, fg_mean, inv_fg_cov, bg_weight, bg_mean, inv_bg_cov);
+                //printf("fg_mean[0] = {%f, %f, %f}\n", fg_mean[0].at<float>(0, 0), fg_mean[0].at<float>(1, 0), fg_mean[0].at<float>(2, 0));
+                //printf("fg_mean[1] = {%f, %f, %f}\n", fg_mean[1].at<float>(0, 0), fg_mean[1].at<float>(1, 0), fg_mean[1].at<float>(2, 0));
+                //printf("fg_mean[2] = {%f, %f, %f}\n", fg_mean[2].at<float>(0, 0), fg_mean[2].at<float>(1, 0), fg_mean[2].at<float>(2, 0));
+                //printf("Got GMM\n");
+                maxL = -1000.0f;
+                //printf("maxL = %f\n", maxL);
+                
+                for(i=0;i<BAYESIAN_MAX_CLUS;i++)
+                {
+                    for(j=0;j<BAYESIAN_MAX_CLUS;j++)
+                    {
+                        if(!iteration)
+                            InitializeAlpha(x, y, maskUnsolved);
+                        else
+                            InitializeAlpha(x, y, solveAgainMask);
+                            
+                        
+                    
+                        for(iter=0;iter<3;iter++)
+                        {
+                            //printf("Trying BF\n");
+                            SolveBF(x, y, fg_mean[i], inv_fg_cov[i], bg_mean[j], inv_bg_cov[j]);
+                            //printf("Trying Alpha\n");
+                            SolveAlpha(x, y);
+                        }
+                        
+                        //printf("Got out\n");
+                        L = computeLikelihood(x, y, fg_mean[i], inv_fg_cov[i], bg_mean[j], inv_bg_cov[j]);
+                        //printf("Likelihood = %f\n", L);
+                        //printf("Got out and done\n");
+                        if(L>maxL)
+                        {
+                            maxL = L;
+                            fgClus = i;
+                            bgClus = j;
+                            //printf("the condition got true\n");
+                        }
+                        //printf("The loop ends here\n");
+                    }
+                }
+                
+                //printf("Got out of the final iteration\n");
+                
+                if(!iteration)
+                    InitializeAlpha(x, y, maskUnsolved);
+                else
+                    InitializeAlpha(x, y, solveAgainMask);
+                    
+                //printf("Got done with the initialization\n");
+                //printf("fgClus=%d, bgClus=%d", fgClus, bgClus);
+                    
+                for(iter=0;iter<5;iter++)
+                {
+                    //printf("Iteration #%d with fgClus=%d, bgClus=%d", iter, fgClus, bgClus);
+                    fflush(stdout);
+                    SolveBF(x, y, fg_mean[fgClus], inv_fg_cov[fgClus], bg_mean[bgClus], inv_bg_cov[bgClus]);
+                    SolveAlpha(x, y);
+                }
+                
+                //printf("Done here too\n");
+                
+                if(!iteration)
+                    maskUnsolved.at<uchar>(y, x) = 0;
+                else
+                    solveAgainMask.at<uchar>(y, x) = 0;
+            }
+            
+            cv::imshow("alpha", alphamap);
+            cv::waitKey(0);
+        }
     }
     
     cv::imshow("img", img);
     cv::waitKey(0);
+}
+
+void BayesianMatting::InitializeAlpha(int x, int y, Mat unsolvedMask)
+{
+    int min_x = max(0, x-WIN_SIZE);
+    int min_y = max(0, y-WIN_SIZE);
+    int max_x = min(img.cols-1, x+WIN_SIZE);
+    int max_y = min(img.rows-1, y+WIN_SIZE);
+    
+    int count = 0;
+    float sum = 0;
+    for(int j=min_y;j<=max_y;j++)
+    {
+        for(int i=min_x;i<=max_x;i++)
+        {
+            if(unsolvedMask.at<uchar>(j, i)==0)
+            {
+                sum+=alphamap.at<float>(j, i);
+                count++;
+            }
+        }
+    }
+    alphamap.at<float>(y, x) = count ? sum/count:0;
+}
+
+void BayesianMatting::SolveAlpha(int x, int y)
+{
+    cv::Vec3b color = img.at<cv::Vec3b>(y, x);
+    cv::Vec3b bg = bgImg.at<cv::Vec3b>(y, x);
+    cv::Vec3b fg = fgImg.at<cv::Vec3b>(y, x);
+
+    alphamap.at<float>(y, x) = std::max(0.0, std::min(1.0, (double)((color[0] - bg[0]) * (fg[0] - bg[0]) + (color[1] - bg[1]) * (fg[1] - bg[1]) + (color[2] - bg[2]) * (fg[2] - bg[2])) / ((fg[0] - bg[0]) * (fg[0] - bg[0]) + (fg[1] - bg[1]) * (fg[1] - bg[1]) + (fg[2] - bg[2]) * (fg[2] - bg[2]))));
+}
+
+void BayesianMatting::SolveBF(int x, int y, Mat fg_mean, Mat inv_fg_cov, Mat bg_mean, Mat inv_bg_cov)
+{
+    Mat A = Mat(6, 6, CV_32FC1, cv::Scalar(0));
+    Mat X = Mat(6, 1, CV_32FC1, cv::Scalar(0));
+    Mat b = Mat(6, 1, CV_32FC1, cv::Scalar(0));
+    Mat I = Mat(3, 3, CV_32FC1, cv::Scalar(0));
+    
+    Mat work_3x3 = Mat(3, 3, CV_32FC1, cv::Scalar(0));
+    Mat work_3x1 = Mat(3, 1, CV_32FC1, cv::Scalar(0));
+    
+    float alpha = alphamap.at<float>(y, x);
+    cv::Vec3b  c_color = img.at<cv::Vec3b>(y, x);
+    cv::Vec3b fg_color = fgImg.at<cv::Vec3b>(y, x);
+    cv::Vec3b bg_color = bgImg.at<cv::Vec3b>(y, x);
+    
+    float inv_sigmac_square = 1.0/(sigmaC*sigmaC);
+    
+    I.at<float>(0,0) = 1;
+    I.at<float>(1,1) = 1;
+    I.at<float>(2,2) = 1;
+    
+//    I.copyTo(work_3x3);
+    work_3x3 = I*(alpha*alpha*inv_sigmac_square);
+    work_3x3 = work_3x3 + inv_fg_cov;
+    
+    for(int i=0;i<3;i++)
+        for(int j=0;j<3;j++)
+            A.at<float>(i, j) = work_3x3.at<float>(i, j);
+            
+//    I.copyTo(work_3x3);
+    work_3x3 = I*(alpha*(1-alpha)*inv_sigmac_square);
+    for(int i=0;i<3;i++)
+        for(int j=0;j<3;j++)
+            A.at<float>(i, 3+j) = work_3x3.at<float>(i, j);
+            
+    
+            
+    work_3x3 = I*((1-alpha)*(1-alpha)*inv_sigmac_square);
+    work_3x3 = work_3x3 + inv_bg_cov;
+    for(int i=0;i<3;i++)
+        for(int j=0;j<3;j++)
+            A.at<float>(3+i, 3+j) = work_3x3.at<float>(i, j);
+    
+    work_3x1 = inv_fg_cov*fg_mean;
+    for(int i=0;i<3;i++)
+        b.at<float>(i, 0) = work_3x1.at<float>(i, 0) + c_color[i]*alpha*inv_sigmac_square;
+        
+        
+        
+    work_3x1 = inv_bg_cov*bg_mean;
+    for(int i=0;i<3;i++)
+        b.at<float>(3+i, 0) = work_3x1.at<float>(i, 0) + c_color[i]*(1-alpha)*inv_sigmac_square;
+    
+     
+    cv::solve(A, b, X);
+    
+    
+    
+    fg_color[0] = (uchar)std::max(0.0, std::min(255.0, (double)X.at<float>(0, 0)));
+    fg_color[1] = (uchar)std::max(0.0, std::min(255.0, (double)X.at<float>(1, 0)));
+    fg_color[2] = (uchar)std::max(0.0, std::min(255.0, (double)X.at<float>(2, 0)));
+    bg_color[0] = (uchar)std::max(0.0, std::min(255.0, (double)X.at<float>(3, 0)));
+    bg_color[1] = (uchar)std::max(0.0, std::min(255.0, (double)X.at<float>(4, 0)));
+    bg_color[2] = (uchar)std::max(0.0, std::min(255.0, (double)X.at<float>(5, 0)));
+    
+    fgImg.at<cv::Vec3b>(y, x) = fg_color;
+    bgImg.at<cv::Vec3b>(y, x) = bg_color;
+            
 }
 
 void BayesianMatting::CollectSampleSet(int x, int y, vector<pair<cv::Point, float> > &fg_set, vector<pair<cv::Point, float> > &bg_set)
@@ -115,12 +345,14 @@ void BayesianMatting::CollectSampleSet(int x, int y, vector<pair<cv::Point, floa
             {
                 dist_weight = expf(-(dist*dist+(z-x)*(z-x)) * inv_2sigma_square);
                 
+                
                 // We know this pixel belongs to the foreground
                 if(maskFg.at<uchar>(y-dist, z)!=0)
                 {
                     sample.first.x = z;
                     sample.first.y = y-dist;
                     sample.second = dist_weight;
+                    //printf("dist_weight = %f\n", dist_weight);
                     
                     fg_set.push_back(sample);
                     if(fg_set.size()==nearest)
@@ -132,7 +364,8 @@ void BayesianMatting::CollectSampleSet(int x, int y, vector<pair<cv::Point, floa
                     sample.first.y = y-dist;
                     
                     float alpha = alphamap.at<float>(y-dist, z);
-                    sample.second = dist_weight*alpha*alpha;                
+                    sample.second = dist_weight*alpha*alpha;     
+                    //printf("dist_weight = %f\n", dist_weight);           
                     
                     fg_set.push_back(sample);
                     if(fg_set.size()==nearest)
@@ -152,6 +385,7 @@ void BayesianMatting::CollectSampleSet(int x, int y, vector<pair<cv::Point, floa
                     sample.first.y = y+dist;
                     sample.first.x = z;
                     sample.second = dist_weight;
+                    //printf("dist_weight = %f\n", dist_weight);
                     
                     fg_set.push_back(sample);
                     if(fg_set.size()==nearest)
@@ -183,6 +417,7 @@ void BayesianMatting::CollectSampleSet(int x, int y, vector<pair<cv::Point, floa
                     sample.first.x = x-dist;
                     sample.first.y = z;
                     sample.second = dist_weight;
+                    //printf("dist_weight = %f\n", dist_weight);
                     
                     fg_set.push_back(sample);
                     if(fg_set.size()==nearest)
@@ -214,6 +449,9 @@ void BayesianMatting::CollectSampleSet(int x, int y, vector<pair<cv::Point, floa
                     sample.first.x = x+dist;
                     sample.first.y = z;
                     sample.second = dist_weight;
+                    
+                    /*if(dist_weight>0.0)
+                        printf("dist_weight = %f\n", dist_weight);*/
                     
                     fg_set.push_back(sample);
                     if(fg_set.size()==nearest)
@@ -371,10 +609,76 @@ DONE:
     return;
 }
 
-void BayesianMatting::GetGMMModel(int x, int y, vector<float> &fg_weight, const vector<Mat> fg_mean, vector<Mat> inv_fg_cov, vector<float> &bg_weight, vector<Mat> bg_mean, vector<Mat> inv_bg_cov)
+float BayesianMatting::computeLikelihood(int x, int y, Mat fg_mean, Mat inv_fg_cov, Mat bg_mean, Mat inv_bg_cov)
+{
+	float fgL, bgL, cL;
+	int i;
+	
+	float alpha = alphamap.at<float>(y, x);
+
+
+
+	Mat work3x1 = Mat(3, 1, CV_32FC1);
+	Mat work1x3 = Mat(1, 3, CV_32FC1);
+	Mat work1x1 = Mat(1, 1, CV_32FC1);
+	Mat fg_color = Mat(3, 1, CV_32FC1);
+	Mat bg_color = Mat(3, 1, CV_32FC1);
+	Mat c_color = Mat(3, 1, CV_32FC1);
+	
+	
+	
+	Vec3b t = fgImg.at<cv::Vec3b>(y, x);
+	fg_color.at<float>(0, 0) = t[0];
+	fg_color.at<float>(1, 0) = t[1];
+	fg_color.at<float>(2, 0) = t[2];
+	
+	t = bgImg.at<cv::Vec3b>(y, x);
+	bg_color.at<float>(0, 0) = t[0];
+	bg_color.at<float>(1, 0) = t[1];
+	bg_color.at<float>(2, 0) = t[2];
+	
+	t = img.at<cv::Vec3b>(y, x);
+	c_color.at<float>(0, 0) = t[0];
+	c_color.at<float>(1, 0) = t[1];
+	c_color.at<float>(2, 0) = t[2];
+	
+	
+	
+	// fgL
+	work3x1 = fg_color - fg_mean;
+	work1x3 = work3x1.t();
+	work1x3 = work1x3*inv_fg_cov;
+	work1x1 = work1x3*work3x1;
+	fgL = -1.0f*work1x1.at<float>(0, 0)/2;
+
+	// bgL
+	work3x1 = bg_color-bg_mean;
+	work1x3 = work3x1.t();
+	work1x3 = work1x3*inv_bg_cov;
+	work1x1 = work1x3*work3x1;
+	bgL = -1.f*work1x1.at<float>(0,0)/2;
+    
+
+	// cL
+	Mat temp = c_color - (alpha*fg_color)- (1.0f-alpha)*bg_color;
+	cL = (temp.dot(temp)) / 2*sigmaC*sigmaC;
+	
+	//printf("Got till the end with fgL=%f\n", bgL);
+
+	return cL+fgL+bgL;
+}
+
+void BayesianMatting::GetGMMModel(int x, int y, vector<float> &fg_weight, vector<Mat> &fg_mean, vector<Mat> inv_fg_cov, vector<float> &bg_weight, vector<Mat> bg_mean, vector<Mat> inv_bg_cov)
 {
     vector<pair<cv::Point, float> > fg_set, bg_set;
     CollectSampleSet(x, y, fg_set, bg_set);
+    
+    /*for(int i=0;i<fg_set.size();i++)
+    {
+        float wt = fg_set[i].second;
+        if(wt>0.0)
+            printf("fg_set[%d] = (%d,%d) - %f\n", fg_set[i].first.x, fg_set[i].first.y, wt);
+    }*/
     
     Mat mean = Mat(3, 1, CV_32FC1);
     Mat cov  = Mat(3, 3, CV_32FC1);
@@ -396,16 +700,18 @@ void BayesianMatting::GetGMMModel(int x, int y, vector<float> &fg_weight, const 
         int max_idx = 0;
         for(int i=0;i<nClus;i++)
         {
+            
             CalculateNonNormalizeCov(fgImg, clus_set[i], mean, cov);
             
             // cov = source
             // eigval = result
             // eigvec = left orthogonal matrix
             // cov = eigvec * eigval * V
+            
             cv::SVD svd;
             svd(cov);
-            eigval = svd.w;
-            eigvec = svd.u;
+            svd.w.copyTo(eigval);
+            svd.u.copyTo(eigvec);
             //cvSVD(cov, eigval, eigvec);
             
             float temp = eigval.at<float>(0, 0);
@@ -442,9 +748,14 @@ void BayesianMatting::GetGMMModel(int x, int y, vector<float> &fg_weight, const 
     for(int i=0;i<nClus;i++)
     {
         CalculateWeightMeanCov(fgImg, clus_set[i], fg_weight[i], fg_mean[i], cov);
+        
         inv_fg_cov[i] = cov.inv();
         weight_sum += fg_weight[i];
     }
+    
+    //printf("fg_mean[0] = {%f, %f, %f}\n", fg_mean[0].at<float>(0, 0), fg_mean[0].at<float>(1, 0), fg_mean[0].at<float>(2, 0));
+    //            printf("fg_mean[1] = {%f, %f, %f}\n", fg_mean[1].at<float>(0, 0), fg_mean[1].at<float>(1, 0), fg_mean[1].at<float>(2, 0));
+    //            printf("fg_mean[2] = {%f, %f, %f}\n", fg_mean[2].at<float>(0, 0), fg_mean[2].at<float>(1, 0), fg_mean[2].at<float>(2, 0));
         
     // Normalize weight
     inv_weight_sum = 1.0f/weight_sum;
@@ -531,7 +842,7 @@ void BayesianMatting::CalculateNonNormalizeCov(Mat cImg, vector<pair<cv::Point, 
         cur_y = clus_set[j].first.y;
         cur_w = clus_set[j].second;
         
-        for(int h=0;h<3;j++)
+        for(int h=0;h<3;h++)
         {
             cv::Vec3b color = cImg.at<cv::Vec3b>(cur_y, cur_x);
             mean.at<float>(h, 0) = mean.at<float>(h, 0) + cur_w*color[h];
@@ -639,4 +950,6 @@ void BayesianMatting::CalculateWeightMeanCov(Mat cImg, vector<pair<cv::Point, fl
     }
     
     weight = total_w;
+    
+    //printf("mean = {%f, %f, %f}\n", mean.at<float>(0, 0), mean.at<float>(1, 0), mean.at<float>(2, 0));
 }
