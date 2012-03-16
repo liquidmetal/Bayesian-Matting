@@ -88,7 +88,7 @@ double BayesianMatting::solve()
     vector<cv::Point> p = getContour(maskUnknown);
     for(int i=0;i<p.size();i++)
     {
-        cv::circle(img, p[i], 1, CV_RGB(255,0,0), 1);
+        cv::circle(img, p[i], 0, CV_RGB(255,0,0), 1);
     }
     
     cv::imshow("img", img);
@@ -369,4 +369,274 @@ BG:
     
 DONE:
     return;
+}
+
+void BayesianMatting::GetGMMModel(int x, int y, vector<float> &fg_weight, const vector<Mat> fg_mean, vector<Mat> inv_fg_cov, vector<float> &bg_weight, vector<Mat> bg_mean, vector<Mat> inv_bg_cov)
+{
+    vector<pair<cv::Point, float> > fg_set, bg_set;
+    CollectSampleSet(x, y, fg_set, bg_set);
+    
+    Mat mean = Mat(3, 1, CV_32FC1);
+    Mat cov  = Mat(3, 3, CV_32FC1);
+    Mat inv_cov = Mat(3, 3, CV_32FC1);
+    Mat eigval = Mat(3, 1, CV_32FC1);
+    Mat eigvec = Mat(3, 3, CV_32FC1);
+    Mat cur_color = Mat(3, 1, CV_32FC1);
+    Mat max_eigvec = Mat(3, 1, CV_32FC1);
+    Mat target_color = Mat(3, 1, CV_32FC1);
+    
+    vector<pair<cv::Point, float> > clus_set[BAYESIAN_MAX_CLUS];
+    int nClus = 1;
+    clus_set[0] = fg_set;
+    
+    while(nClus < BAYESIAN_MAX_CLUS)
+    {
+        // Find the largest eigen value
+        double max_eigval = 0;
+        int max_idx = 0;
+        for(int i=0;i<nClus;i++)
+        {
+            CalculateNonNormalizeCov(fgImg, clus_set[i], mean, cov);
+            
+            // cov = source
+            // eigval = result
+            // eigvec = left orthogonal matrix
+            // cov = eigvec * eigval * V
+            cv::SVD svd;
+            svd(cov);
+            eigval = svd.w;
+            eigvec = svd.u;
+            //cvSVD(cov, eigval, eigvec);
+            
+            float temp = eigval.at<float>(0, 0);
+            if(temp > max_eigval)
+            {
+                max_eigvec = eigvec.col(0);
+                max_idx = i;
+            }
+        }
+        
+        // Split
+        vector<pair<cv::Point, float> > new_clus_set[2];
+        CalculateMeanCov(fgImg, clus_set[max_idx], mean, cov);
+        double boundary = mean.dot(max_eigvec);
+        for(size_t i=0;i<clus_set[max_idx].size();i++)
+        {
+            for(int j=0;j<3;j++)
+                cur_color.at<float>(j, 0) = fgImg.at<cv::Vec3b>(clus_set[max_idx][i].first.y, clus_set[max_idx][i].first.x)[j];
+                
+                if(cur_color.dot(max_eigvec)>boundary)
+                    new_clus_set[0].push_back(clus_set[max_idx][i]);
+                else
+                    new_clus_set[1].push_back(clus_set[max_idx][i]);
+        }
+        
+        clus_set[max_idx] = new_clus_set[0];
+        clus_set[nClus] = new_clus_set[1];
+        
+        nClus+=1;
+    }
+        
+    float weight_sum, inv_weight_sum;
+    weight_sum = 0;
+    for(int i=0;i<nClus;i++)
+    {
+        CalculateWeightMeanCov(fgImg, clus_set[i], fg_weight[i], fg_mean[i], cov);
+        inv_fg_cov[i] = cov.inv();
+        weight_sum += fg_weight[i];
+    }
+        
+    // Normalize weight
+    inv_weight_sum = 1.0f/weight_sum;
+    for(int i=0;i<nClus;i++)
+        fg_weight[i] *= inv_weight_sum;
+            
+    // Background
+    nClus = 1;
+    for(int i=0;i<BAYESIAN_MAX_CLUS;i++)
+        clus_set[i].clear();
+    
+    clus_set[0] = bg_set;
+    while(nClus<BAYESIAN_MAX_CLUS)
+    {
+        // Find the largest eigenvalue
+        double max_eigval = 0;
+        int max_idx = 0;
+        
+        for(int i=0;i<nClus;i++)
+        {
+            CalculateNonNormalizeCov(bgImg, clus_set[i], mean, cov);
+            
+            // Compute the eigval and eigvec
+            cv::SVD svd;
+            svd(cov);
+            eigval = svd.w;
+            eigvec = svd.u;
+            float temp = eigval.at<float>(0, 0);
+            if(temp > max_eigval)
+            {
+                max_eigvec = eigvec.col(0);
+                max_eigval = temp;
+                max_idx = i;
+            }
+        }
+        
+        // split
+        vector<pair<cv::Point, float> > new_clus_set[2];
+        CalculateMeanCov(bgImg, clus_set[max_idx], mean, cov);
+        double boundary = mean.dot(max_eigvec);
+        for(size_t i=0;i<clus_set[max_idx].size();i++)
+        {
+            for(int j=0;j<3;j++)
+                cur_color.at<float>(j, 0) = bgImg.at<cv::Vec3b>(clus_set[max_idx][i].first.y, clus_set[max_idx][i].first.x)[j];
+            
+            if(cur_color.dot(max_eigvec)>boundary)
+                new_clus_set[0].push_back(clus_set[max_idx][i]);
+            else
+                new_clus_set[1].push_back(clus_set[max_idx][i]);
+        }
+        
+        clus_set[max_idx] = new_clus_set[0];
+        clus_set[nClus] = new_clus_set[1];
+        
+        nClus += 1;
+    }
+    
+    // Return all the mean and cov for the background
+    weight_sum = 0;
+    for(int i=0;i<nClus;i++)
+    {
+        CalculateWeightMeanCov(bgImg, clus_set[i], bg_weight[i], bg_mean[i], cov);
+        inv_bg_cov[i] = cov.inv();
+        weight_sum += bg_weight[i];
+    }
+    
+    // Normalize weights
+    inv_weight_sum = 1.0f/weight_sum;
+    for(int i=0;i<nClus;i++)
+        bg_weight[i] *= inv_weight_sum;
+}
+
+void BayesianMatting::CalculateNonNormalizeCov(Mat cImg, vector<pair<cv::Point, float> > &clus_set, Mat mean, Mat cov)
+{
+    int cur_x, cur_y;
+    float cur_w, total_w=0;
+    
+    Mat(Mat::zeros(mean.rows, mean.cols, CV_32FC1)).copyTo(mean);
+    Mat(Mat::zeros(cov.rows, cov.cols, CV_32FC1)).copyTo(cov);
+    
+    for(size_t j=0;j<clus_set.size();j++)
+    {
+        cur_x = clus_set[j].first.x;
+        cur_y = clus_set[j].first.y;
+        cur_w = clus_set[j].second;
+        
+        for(int h=0;h<3;j++)
+        {
+            cv::Vec3b color = cImg.at<cv::Vec3b>(cur_y, cur_x);
+            mean.at<float>(h, 0) = mean.at<float>(h, 0) + cur_w*color[h];
+            for(int k=0;k<3;k++)
+            {
+                color = cImg.at<cv::Vec3b>(cur_y, cur_x);
+                cov.at<float>(h, k) = cov.at<float>(h, k) + cur_w*color[h]*color[k];
+            }
+        }
+        
+        total_w += cur_w;
+    }
+    
+    float inv_total_w = 1.0f/total_w;
+    for(int h=0;h<3;h++)
+    {
+        for(int k=0;k<3;k++)
+            cov.at<float>(h, k) = cov.at<float>(h, k) - inv_total_w*mean.at<float>(h, 0)*mean.at<float>(k, 0);
+    }
+}
+
+void BayesianMatting::CalculateMeanCov(Mat cImg, vector<pair<cv::Point, float> > &clus_set, Mat mean, Mat cov)
+{
+    int cur_x, cur_y;
+    float cur_w, total_w=0;
+    Mat(Mat::zeros(mean.rows, mean.cols, CV_32FC1)).copyTo(mean);
+    Mat(Mat::zeros(cov.rows, cov.cols, CV_32FC1)).copyTo(cov);    
+    for(size_t j=0;j<clus_set.size();j++)
+    {
+        cur_x = clus_set[j].first.x;
+        cur_y = clus_set[j].first.y;
+        cur_w = clus_set[j].second;
+        
+        for(int h=0;h<3;h++)
+        {
+            cv::Vec3b color = cImg.at<cv::Vec3b>(cur_y, cur_x);
+            mean.at<float>(h, 0) = mean.at<float>(h, 0) + cur_w*color[h];
+            for(int k=0;k<3;k++)
+            {
+                color = cImg.at<cv::Vec3b>(cur_y, cur_x);
+                cov.at<float>(h, k) = cov.at<float>(h, k) + cur_w*color[h]*color[k];
+            }
+        }
+        
+        total_w += cur_w;
+    }
+    
+    float inv_total_w = 1.0f/total_w;
+    for(int h=0;h<3;h++)
+    {
+        mean.at<float>(h, 0) = mean.at<float>(h, 0) * inv_total_w;
+        for(int k=0;k<3;k++)
+            cov.at<float>(h, k) = cov.at<float>(h, k) * inv_total_w;
+    }
+    
+    for(int h=0;h<3;h++)
+    {
+        for(int k=0;k<3;k++)
+        {
+             cov.at<float>(h, k) = cov.at<float>(h, k) - mean.at<float>(h, 0)*mean.at<float>(k, 0);
+        }
+    }
+}
+
+void BayesianMatting::CalculateWeightMeanCov(Mat cImg, vector<pair<cv::Point, float> > &clus_set, float &weight, Mat mean, Mat cov)
+{
+    int cur_x, cur_y;
+    float cur_w, total_w=0;
+    Mat(Mat::zeros(mean.rows, mean.cols, CV_32FC1)).copyTo(mean);
+    Mat(Mat::zeros(cov.rows, cov.cols, CV_32FC1)).copyTo(cov);    
+    for(size_t j=0;j<clus_set.size();j++)
+    {
+        cur_x = clus_set[j].first.x;
+        cur_y = clus_set[j].first.y;
+        cur_w = clus_set[j].second;
+        
+        for(int h=0;h<3;h++)
+        {
+            cv::Vec3b color = cImg.at<cv::Vec3b>(cur_y, cur_x);
+            mean.at<float>(h, 0) = mean.at<float>(h, 0) + cur_w*color[h];
+            for(int k=0;k<3;k++)
+            {
+                //color = cImg.at<cv::Vec3b>(cur_y, cur_x);
+                cov.at<float>(h, k) = cov.at<float>(h, k) + cur_w*color[h]*color[k];
+            }
+        }
+        
+        total_w += cur_w;
+    }
+    
+    float inv_total_w = 1.0f/total_w;
+    for(int h=0;h<3;h++)
+    {
+        mean.at<float>(h, 0) = mean.at<float>(h, 0) * inv_total_w;
+        for(int k=0;k<3;k++)
+            cov.at<float>(h, k) = cov.at<float>(h, k) * inv_total_w;
+    }
+    
+    for(int h=0;h<3;h++)
+    {
+        for(int k=0;k<3;k++)
+        {
+             cov.at<float>(h, k) = cov.at<float>(h, k) - mean.at<float>(h, 0)*mean.at<float>(k, 0);
+        }
+    }
+    
+    weight = total_w;
 }
