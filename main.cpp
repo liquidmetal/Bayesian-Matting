@@ -84,13 +84,14 @@ int main(int argc, char** argv)
     for(int i=1;i<argc;i++)
     {
         // Load the image and try solving it
-        //Mat img = cv::imread(argv[i]);
-        //clearPreviousSettings(img);
+        Mat img = cv::imread(argv[i]);
+        clearPreviousSettings(img);
         
         // Get a trimap from the user
-        //Mat imgTrimap = getTrimap(img);
-        Mat img = cv::imread("./GT01.png");
-        Mat imgTrimap = cv::imread("./GT01_tri.png", 0);
+        Mat imgTrimap = getTrimap(img);
+        //Mat img = cv::imread("./donkey.png");
+        //Mat imgTrimap = cv::imread("./donkey_trimap1.png", 0);
+        cv::bitwise_not(imgTrimap, imgTrimap);
         
         imshow("Image", img);
         imshow("Trimap", imgTrimap);

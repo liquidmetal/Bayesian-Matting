@@ -5,7 +5,7 @@
 using namespace std;
 using namespace cv;
 
-#define BAYESIAN_NUMBER_NEAREST   200
+#define BAYESIAN_NUMBER_NEAREST   500
 #define BAYESIAN_SIGMA            8.f
 #define BAYESIAN_SIGMA_C          5.f
 #define BAYESIAN_MAX_CLUS           3
